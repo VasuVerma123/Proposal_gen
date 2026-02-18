@@ -277,7 +277,7 @@ def list_documents():
 @app.post("/api/export/pdf")
 def export_pdf(req: ExportRequest):
     """Generate a styled PDF from the proposal markdown using thesis_tool."""
-    from thesis_tool import save_as_pdf, call_c1_api
+    from thesis_tool import save_as_pdf
     import tempfile
 
     md = req.markdown
@@ -285,17 +285,11 @@ def export_pdf(req: ExportRequest):
         raise HTTPException(status_code=400, detail="No markdown content provided.")
 
     try:
-        # Run through Thesys C1 API for professional formatting
-        try:
-            c1_md = call_c1_api(md)
-        except Exception as e:
-            print(f"[export] Thesys C1 API failed ({e}), using raw markdown")
-            c1_md = md
-
-        # Generate PDF into a temp file
+        # Generate PDF directly from the original markdown
+        # (Thesys C1 API returns structured JSON, not markdown — so we skip it)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
         tmp.close()
-        save_as_pdf(c1_md, tmp.name)
+        save_as_pdf(md, tmp.name)
 
         pdf_bytes = open(tmp.name, "rb").read()
         os.unlink(tmp.name)
@@ -312,7 +306,7 @@ def export_pdf(req: ExportRequest):
 @app.post("/api/export/docx")
 def export_docx(req: ExportRequest):
     """Generate a styled DOCX from the proposal markdown using thesis_tool."""
-    from thesis_tool import save_as_docx, call_c1_api
+    from thesis_tool import save_as_docx
     import tempfile
 
     md = req.markdown
@@ -320,17 +314,11 @@ def export_docx(req: ExportRequest):
         raise HTTPException(status_code=400, detail="No markdown content provided.")
 
     try:
-        # Run through Thesys C1 API for professional formatting
-        try:
-            c1_md = call_c1_api(md)
-        except Exception as e:
-            print(f"[export] Thesys C1 API failed ({e}), using raw markdown")
-            c1_md = md
-
-        # Generate DOCX into a temp file
+        # Generate DOCX directly from the original markdown
+        # (Thesys C1 API returns structured JSON, not markdown — so we skip it)
         tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
         tmp.close()
-        save_as_docx(c1_md, tmp.name)
+        save_as_docx(md, tmp.name)
 
         docx_bytes = open(tmp.name, "rb").read()
         os.unlink(tmp.name)
