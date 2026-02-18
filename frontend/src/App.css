@@ -312,6 +312,48 @@
   border-bottom: 1px solid #334155;
 }
 
+.preview-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.export-btn {
+  padding: 6px 14px;
+  border: none;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s;
+  letter-spacing: 0.5px;
+}
+
+.export-btn.pdf {
+  background: #dc2626;
+  color: #fff;
+}
+.export-btn.pdf:hover:not(:disabled) {
+  background: #b91c1c;
+}
+
+.export-btn.docx {
+  background: #2563eb;
+  color: #fff;
+}
+.export-btn.docx:hover:not(:disabled) {
+  background: #1d4ed8;
+}
+
+.export-btn:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+.preview-open {
+  color: #94a3b8;
+}
+
 .preview-content {
   flex: 1;
   overflow: hidden;

@@ -8,3 +8,6 @@ pypdf2
 tiktoken
 python-multipart
 jinja2
+markdown
+xhtml2pdf
+python-docx

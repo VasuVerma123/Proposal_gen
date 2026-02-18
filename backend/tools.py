@@ -202,6 +202,7 @@ def proposal_engine(
     return json.dumps({
         "status": "preview_ready",
         "html": html,
+        "markdown": proposal_markdown,
         "sections_count": len(sections),
     })
 

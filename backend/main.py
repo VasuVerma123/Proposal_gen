@@ -6,9 +6,11 @@ import os
 import sys
 import json
 import base64
+from io import BytesIO
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -85,7 +87,12 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     reply: str
     preview_html: str | None = None
+    proposal_markdown: str | None = None
     tool_calls: list[str] = []
+
+
+class ExportRequest(BaseModel):
+    markdown: str
 
 
 # ── Endpoints ────────────────────────────────────────────────────
@@ -156,6 +163,7 @@ def chat(req: ChatRequest):
         return ChatResponse(
             reply=result["reply"],
             preview_html=result.get("preview_html"),
+            proposal_markdown=result.get("proposal_markdown"),
             tool_calls=result.get("tool_calls", []),
         )
     except Exception as e:
@@ -262,6 +270,78 @@ def list_documents():
         return {"proposals": proposals, "rfps": rfps, "assets": assets}
     except Exception as e:
         return {"proposals": [], "rfps": [], "assets": [], "error": str(e)}
+
+
+# ── Export as PDF / DOCX via Thesys ──────────────────────────────
+
+@app.post("/api/export/pdf")
+def export_pdf(req: ExportRequest):
+    """Generate a styled PDF from the proposal markdown using thesis_tool."""
+    from thesis_tool import save_as_pdf, call_c1_api
+    import tempfile
+
+    md = req.markdown
+    if not md or not md.strip():
+        raise HTTPException(status_code=400, detail="No markdown content provided.")
+
+    try:
+        # Run through Thesys C1 API for professional formatting
+        try:
+            c1_md = call_c1_api(md)
+        except Exception as e:
+            print(f"[export] Thesys C1 API failed ({e}), using raw markdown")
+            c1_md = md
+
+        # Generate PDF into a temp file
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf")
+        tmp.close()
+        save_as_pdf(c1_md, tmp.name)
+
+        pdf_bytes = open(tmp.name, "rb").read()
+        os.unlink(tmp.name)
+
+        return StreamingResponse(
+            BytesIO(pdf_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": "attachment; filename=proposal.pdf"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PDF generation failed: {e}")
+
+
+@app.post("/api/export/docx")
+def export_docx(req: ExportRequest):
+    """Generate a styled DOCX from the proposal markdown using thesis_tool."""
+    from thesis_tool import save_as_docx, call_c1_api
+    import tempfile
+
+    md = req.markdown
+    if not md or not md.strip():
+        raise HTTPException(status_code=400, detail="No markdown content provided.")
+
+    try:
+        # Run through Thesys C1 API for professional formatting
+        try:
+            c1_md = call_c1_api(md)
+        except Exception as e:
+            print(f"[export] Thesys C1 API failed ({e}), using raw markdown")
+            c1_md = md
+
+        # Generate DOCX into a temp file
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
+        tmp.close()
+        save_as_docx(c1_md, tmp.name)
+
+        docx_bytes = open(tmp.name, "rb").read()
+        os.unlink(tmp.name)
+
+        return StreamingResponse(
+            BytesIO(docx_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": "attachment; filename=proposal.docx"},
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"DOCX generation failed: {e}")
 
 
 # ── Helpers ──────────────────────────────────────────────────────

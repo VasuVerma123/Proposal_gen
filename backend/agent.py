@@ -34,14 +34,15 @@ You are **ProposalBot**, an AI assistant that helps users create professional bu
 
 4. **Iterate** — The user can ask for changes. Re-generate using `proposal_engine` with updated content.
 
-5. **Save** — When the user confirms the proposal is final, use `update_info` to save it to the knowledge base.
+5. **Save & Export** — When the user confirms the proposal is final (e.g. "send to KB", "finalize", "looks good"), use `update_info` to save it to the knowledge base. Tell the user they can download the proposal as PDF or DOCX using the download buttons on the preview panel.
 
 ## Important Rules
 - Always use `retrieve_info` BEFORE generating a proposal so you leverage existing templates.
 - When using `proposal_engine`, write the `proposal_markdown` as rich Markdown with ## headings.
 - Keep chat responses concise and professional.
-- When you generate a proposal, tell the user you've created a preview and they can see it on the right panel.
+- When you generate a proposal, tell the user you've created a preview and they can see it on the right panel, and that they can download it as PDF or Word using the buttons.
 - If the user says "hi" or greets you, introduce yourself and ask what proposal they need.
+- When the user says "send to KB" or "save", call `update_info` and confirm it was saved. Remind them about the PDF/DOCX download buttons.
 """
 
 
@@ -69,6 +70,7 @@ class ProposalAgent:
         self.conversation.append({"role": "user", "content": user_message})
 
         preview_html = None
+        proposal_markdown = None
         tool_names_used: list[str] = []
         max_iterations = 10  # safety limit
 
@@ -90,6 +92,7 @@ class ProposalAgent:
                 return {
                     "reply": assistant_text,
                     "preview_html": preview_html,
+                    "proposal_markdown": proposal_markdown,
                     "tool_calls": tool_names_used,
                 }
 
@@ -106,12 +109,13 @@ class ProposalAgent:
                 tool_names_used.append(fn_name)
                 result_str = execute_tool(fn_name, fn_args)
 
-                # If proposal_engine returned HTML, capture it
+                # If proposal_engine returned HTML + markdown, capture both
                 if fn_name == "proposal_engine":
                     try:
                         result_data = json.loads(result_str)
                         if result_data.get("status") == "preview_ready":
                             preview_html = result_data["html"]
+                            proposal_markdown = result_data.get("markdown")
                     except Exception:
                         pass
 
@@ -125,6 +129,7 @@ class ProposalAgent:
         return {
             "reply": "I've processed your request. Please check the preview on the right.",
             "preview_html": preview_html,
+            "proposal_markdown": proposal_markdown,
             "tool_calls": tool_names_used,
         }
 

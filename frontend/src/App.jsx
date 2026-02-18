@@ -16,7 +16,9 @@ export default function App() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [previewHtml, setPreviewHtml] = useState(null);
+  const [proposalMarkdown, setProposalMarkdown] = useState(null);
   const [toolsUsed, setToolsUsed] = useState([]);
+  const [exporting, setExporting] = useState(null); // "pdf" | "docx" | null
   const [neo4jOk, setNeo4jOk] = useState(null);
   const [showUpload, setShowUpload] = useState(false);
   const [kbDocs, setKbDocs] = useState(null);
@@ -65,12 +67,16 @@ export default function App() {
         session_id: "default",
       });
 
-      const { reply, preview_html, tool_calls } = res.data;
+      const { reply, preview_html, proposal_markdown, tool_calls } = res.data;
 
       setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
 
       if (preview_html) {
         setPreviewHtml(preview_html);
+      }
+
+      if (proposal_markdown) {
+        setProposalMarkdown(proposal_markdown);
       }
 
       if (tool_calls && tool_calls.length > 0) {
@@ -105,7 +111,9 @@ export default function App() {
       },
     ]);
     setPreviewHtml(null);
+    setProposalMarkdown(null);
     setToolsUsed([]);
+    setExporting(null);
   };
 
   // ── Load KB docs ───────────────────────────────────────
@@ -145,6 +153,36 @@ export default function App() {
       }
     };
     fileInput.click();
+  };
+
+  // ── Export / Download proposal ─────────────────────────
+  const exportProposal = async (format) => {
+    if (!proposalMarkdown) {
+      alert("No proposal to export. Generate a proposal first.");
+      return;
+    }
+    setExporting(format);
+    try {
+      const res = await axios.post(
+        `${API}/api/export/${format}`,
+        { markdown: proposalMarkdown },
+        { responseType: "blob" }
+      );
+      // Create download link
+      const blob = new Blob([res.data]);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `proposal.${format}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+    } catch (err) {
+      alert(`Export failed: ${err.response?.data?.detail || err.message}`);
+    } finally {
+      setExporting(null);
+    }
   };
 
   // ── Render markdown-ish text ───────────────────────────
@@ -302,19 +340,41 @@ export default function App() {
       <div className="preview-panel">
         <div className="preview-header">
           <span>Proposal Preview</span>
-          {previewHtml && (
-            <button
-              className="btn-icon"
-              onClick={() => {
-                const w = window.open("", "_blank");
-                w.document.write(previewHtml);
-                w.document.close();
-              }}
-              title="Open in new tab"
-            >
-              &#8599;
-            </button>
-          )}
+          <div className="preview-actions">
+            {proposalMarkdown && (
+              <>
+                <button
+                  className="export-btn pdf"
+                  onClick={() => exportProposal("pdf")}
+                  disabled={exporting !== null}
+                  title="Download as PDF"
+                >
+                  {exporting === "pdf" ? "Generating..." : "PDF"}
+                </button>
+                <button
+                  className="export-btn docx"
+                  onClick={() => exportProposal("docx")}
+                  disabled={exporting !== null}
+                  title="Download as Word"
+                >
+                  {exporting === "docx" ? "Generating..." : "DOCX"}
+                </button>
+              </>
+            )}
+            {previewHtml && (
+              <button
+                className="btn-icon preview-open"
+                onClick={() => {
+                  const w = window.open("", "_blank");
+                  w.document.write(previewHtml);
+                  w.document.close();
+                }}
+                title="Open in new tab"
+              >
+                &#8599;
+              </button>
+            )}
+          </div>
         </div>
         <div className="preview-content">
           {previewHtml ? (
