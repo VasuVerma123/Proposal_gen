@@ -1,0 +1,10 @@
+fastapi
+uvicorn
+openai
+python-dotenv
+pydantic
+neo4j
+pypdf2
+tiktoken
+python-multipart
+jinja2
