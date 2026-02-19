@@ -1,18 +1,18 @@
 """
-Four tools exposed to the OpenAI function-calling agent:
+Five tools exposed to the OpenAI function-calling agent:
 
-  1. retrieve_info   - search KB for similar proposals / matched requirements
-  2. analyze_rfp     - break RFP into requirements & search KB per-requirement
-  3. update_info     - save the confirmed proposal back into the KB
-  4. proposal_engine - gather all info and build the proposal HTML preview
+  1. retrieve_info    – search KB for similar proposals / matched requirements
+  2. analyze_rfp      – break RFP into requirements & search KB per-requirement
+  3. proposal_engine  – generate full proposal (all sections) from markdown
+  4. edit_section     – surgically update a single section by ID
+  5. update_info      – save the confirmed proposal back into the KB
 """
 
 import os
 import json
-import base64
 from openai import OpenAI
 from agents.build_kb_agent import BuildKBAgent
-from pdf_builder import build_proposal_html, sections_from_markdown
+from proposal_template import parse_markdown_to_sections
 
 # ── Lazy singleton for the KB agent ─────────────────────────────
 
@@ -43,7 +43,7 @@ TOOL_DEFINITIONS = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "The search query describing what the user needs (e.g. sector, industry, requirements).",
+                        "description": "The search query describing what the user needs.",
                     },
                     "top_k": {
                         "type": "integer",
@@ -59,29 +59,94 @@ TOOL_DEFINITIONS = [
         "function": {
             "name": "analyze_rfp",
             "description": (
-                "Analyze an RFP (Request for Proposal) by breaking it into individual "
-                "requirements and searching the knowledge base for each one. Returns a "
-                "detailed breakdown of which requirements have matching proposals/templates "
-                "in our KB and which ones are new. Use this when the user provides RFP text, "
-                "requirements, or describes what their proposal should cover."
+                "Analyze an RFP by breaking it into individual requirements and "
+                "searching the knowledge base for each one. Returns a detailed "
+                "breakdown of which requirements have matching proposals/templates."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "rfp_text": {
                         "type": "string",
-                        "description": (
-                            "The full RFP text or requirements description provided by the user. "
-                            "This can be the raw RFP content, a list of requirements, or a "
-                            "description of what the proposal should address."
-                        ),
+                        "description": "The full RFP text or requirements description.",
                     },
                     "sector": {
                         "type": "string",
-                        "description": "Industry sector (e.g. Telecom, Banking, Insurance).",
+                        "description": "Industry sector (e.g. Telecom, Banking).",
                     },
                 },
                 "required": ["rfp_text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "proposal_engine",
+            "description": (
+                "Generate the FULL proposal content for ALL sections. Write the "
+                "proposal_markdown using section headings that match the template "
+                "IDs, e.g.:\n"
+                "  # 0. Cover & Administrative Information\n"
+                "  ## 0.1 Cover Page\n"
+                "  (content)\n"
+                "  # 1. Executive Summary\n"
+                "  ## 1.1 Client Context\n"
+                "  (content)\n"
+                "Use this tool to generate the initial proposal or regenerate "
+                "all sections at once."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "company_name": {
+                        "type": "string",
+                        "description": "Name of the proposing company.",
+                    },
+                    "client_name": {
+                        "type": "string",
+                        "description": "Name of the client / RFP issuer.",
+                    },
+                    "sector": {
+                        "type": "string",
+                        "description": "Industry sector.",
+                    },
+                    "proposal_markdown": {
+                        "type": "string",
+                        "description": (
+                            "The FULL proposal in Markdown. Use headings with "
+                            "section numbers: # 0. Title, ## 0.1 SubTitle, "
+                            "### 2.2.1 SubSubTitle. Write content for every "
+                            "major section (0 through 7)."
+                        ),
+                    },
+                },
+                "required": ["company_name", "client_name", "sector", "proposal_markdown"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit_section",
+            "description": (
+                "Edit a SINGLE section of the proposal by its ID. Use this when "
+                "the user asks to rewrite, expand, condense, or change a specific "
+                "section (e.g. 'edit section 2.4.3', 'rewrite 1.1', 'expand 5.3')."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "section_id": {
+                        "type": "string",
+                        "description": "The section ID to edit (e.g. '1.1', '2.4.3', '5.3').",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "The new markdown content for this section.",
+                    },
+                },
+                "required": ["section_id", "content"],
             },
         },
     },
@@ -118,43 +183,6 @@ TOOL_DEFINITIONS = [
                     },
                 },
                 "required": ["sector", "company", "sent_to", "text"],
-            },
-        },
-    },
-    {
-        "type": "function",
-        "function": {
-            "name": "proposal_engine",
-            "description": (
-                "Generate a professional proposal preview. Takes company info, "
-                "client info, sector, RFP requirements, and optionally a template "
-                "from the knowledge base, and produces styled proposal HTML."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "company_name": {
-                        "type": "string",
-                        "description": "Name of the proposing company.",
-                    },
-                    "client_name": {
-                        "type": "string",
-                        "description": "Name of the client / RFP issuer.",
-                    },
-                    "sector": {
-                        "type": "string",
-                        "description": "Industry sector.",
-                    },
-                    "proposal_markdown": {
-                        "type": "string",
-                        "description": (
-                            "The full proposal content in Markdown format with "
-                            "## headings for each section. Sections like Executive Summary, "
-                            "Scope of Work, Approach, Timeline, Pricing, etc."
-                        ),
-                    },
-                },
-                "required": ["company_name", "client_name", "sector", "proposal_markdown"],
             },
         },
     },
@@ -196,20 +224,11 @@ def retrieve_info(query: str, top_k: int = 5) -> str:
 
 
 def analyze_rfp(rfp_text: str, sector: str | None = None) -> str:
-    """
-    Break an RFP into individual requirements and search the KG for each one.
-
-    Pipeline:
-      1. GPT parses the RFP text into distinct, atomic requirements.
-      2. Each requirement is embedded and vector-searched against all KG chunks
-         (ProposalChunk, RFPChunk, AssetChunk).
-      3. Results are structured per-requirement with matched KB items + scores.
-    """
+    """Break an RFP into individual requirements and search the KG for each."""
     api_key = os.getenv("OPENAI_API_KEY", "")
     client = OpenAI(api_key=api_key)
     kb = _get_kb()
 
-    # ── Step 1: Parse RFP into requirements using GPT ─────────────
     parse_prompt = (
         "You are an RFP analyst. Extract every distinct requirement from the "
         "following RFP or requirements description. Return valid JSON with a "
@@ -220,13 +239,11 @@ def analyze_rfp(rfp_text: str, sector: str | None = None) -> str:
         "  - \"description\": 1-2 sentence detailed description\n"
         "  - \"category\": one of [\"functional\", \"technical\", \"operational\", "
         "\"compliance\", \"commercial\", \"support\"]\n\n"
-        "Be thorough. Extract EVERY requirement, even implicit ones. "
-        "If the text mentions a sector or industry, extract domain-specific "
-        "requirements too."
+        "Be thorough. Extract EVERY requirement, even implicit ones."
     )
 
     try:
-        parse_response = client.chat.completions.create(
+        resp = client.chat.completions.create(
             model="gpt-4o",
             messages=[
                 {"role": "system", "content": parse_prompt},
@@ -235,53 +252,42 @@ def analyze_rfp(rfp_text: str, sector: str | None = None) -> str:
             response_format={"type": "json_object"},
             temperature=0.2,
         )
-        parsed = json.loads(parse_response.choices[0].message.content)
+        parsed = json.loads(resp.choices[0].message.content)
         requirements = parsed.get("requirements", [])
     except Exception as e:
         return json.dumps({"error": f"Failed to parse RFP: {e}"})
 
     if not requirements:
-        return json.dumps({
-            "error": "Could not extract any requirements from the provided text.",
-            "total_requirements": 0,
-        })
+        return json.dumps({"error": "Could not extract any requirements.", "total_requirements": 0})
 
-    # ── Step 2: Search KG for each requirement ────────────────────
     results = []
     for req in requirements:
-        search_query = f"{req.get('title', '')}: {req.get('description', '')}"
+        search_q = f"{req.get('title', '')}: {req.get('description', '')}"
         if sector:
-            search_query = f"[{sector}] {search_query}"
+            search_q = f"[{sector}] {search_q}"
 
         try:
-            matches = kb.search_similar(search_query, top_k=3)
+            matches = kb.search_similar(search_q, top_k=3)
         except Exception:
             matches = []
 
-        formatted_matches = []
+        fmt = []
         for m in matches:
             parent = m.get("parent", {})
             score = round(m.get("score", 0), 4)
-            # Only include matches with a meaningful similarity score
             if score >= 0.65:
-                formatted_matches.append({
+                fmt.append({
                     "type": parent.get("_label", "Unknown"),
                     "id": parent.get("id", ""),
                     "sector": parent.get("sector", ""),
-                    "company": parent.get("company", ""),
                     "score": score,
                     "matched_text": (m.get("chunk_text", ""))[:400],
                 })
 
-        coverage = "full" if formatted_matches else "none"
-        if formatted_matches:
-            best_score = max(m["score"] for m in formatted_matches)
-            if best_score >= 0.85:
-                coverage = "strong"
-            elif best_score >= 0.75:
-                coverage = "partial"
-            else:
-                coverage = "weak"
+        coverage = "none"
+        if fmt:
+            best = max(m["score"] for m in fmt)
+            coverage = "strong" if best >= 0.85 else "partial" if best >= 0.75 else "weak"
 
         results.append({
             "requirement_id": req.get("id", ""),
@@ -289,33 +295,54 @@ def analyze_rfp(rfp_text: str, sector: str | None = None) -> str:
             "description": req.get("description", ""),
             "category": req.get("category", ""),
             "coverage": coverage,
-            "kb_matches": formatted_matches,
+            "kb_matches": fmt,
         })
 
-    # ── Step 3: Summary ───────────────────────────────────────────
     total = len(results)
     strong = sum(1 for r in results if r["coverage"] == "strong")
     partial = sum(1 for r in results if r["coverage"] == "partial")
     weak = sum(1 for r in results if r["coverage"] == "weak")
     none_ = sum(1 for r in results if r["coverage"] == "none")
 
-    summary = {
+    return json.dumps({
         "total_requirements": total,
-        "coverage_summary": {
-            "strong_match": strong,
-            "partial_match": partial,
-            "weak_match": weak,
-            "no_match": none_,
-        },
+        "coverage_summary": {"strong_match": strong, "partial_match": partial, "weak_match": weak, "no_match": none_},
         "coverage_pct": round((strong + partial) / total * 100, 1) if total else 0,
         "requirements": results,
         "recommendation": (
             f"Found {strong + partial} of {total} requirements with KB coverage. "
             + (f"{none_} requirement(s) will need fresh content." if none_ else "All requirements have some KB coverage!")
         ),
-    }
+    })
 
-    return json.dumps(summary)
+
+def proposal_engine(
+    company_name: str,
+    client_name: str,
+    sector: str,
+    proposal_markdown: str,
+) -> str:
+    """Parse proposal markdown into sections and return structured data."""
+    sections = parse_markdown_to_sections(proposal_markdown)
+    return json.dumps({
+        "status": "preview_ready",
+        "metadata": {
+            "company_name": company_name,
+            "client_name": client_name,
+            "sector": sector,
+        },
+        "sections": sections,
+        "markdown": proposal_markdown,
+    })
+
+
+def edit_section(section_id: str, content: str) -> str:
+    """Update a single section. The agent loop applies the change."""
+    return json.dumps({
+        "status": "section_updated",
+        "section_id": section_id,
+        "content": content,
+    })
 
 
 def update_info(
@@ -327,54 +354,25 @@ def update_info(
 ) -> str:
     """Save confirmed proposal back to KB."""
     kb = _get_kb()
-    data = {
-        "sector": sector,
-        "company": company,
-        "sent_to": sent_to,
-        "text": text,
-    }
+    data = {"sector": sector, "company": company, "sent_to": sent_to, "text": text}
     if proposal_id:
         data["id"] = proposal_id
-
     result = kb._add_proposal(data)
     return json.dumps({"status": "saved", "detail": result})
 
 
-def proposal_engine(
-    company_name: str,
-    client_name: str,
-    sector: str,
-    proposal_markdown: str,
-) -> str:
-    """Build styled proposal HTML from markdown content."""
-    sections = sections_from_markdown(proposal_markdown)
-    html = build_proposal_html(
-        company_name=company_name,
-        client_name=client_name,
-        sector=sector,
-        sections=sections,
-        logo_data_uri=None,
-    )
-    return json.dumps({
-        "status": "preview_ready",
-        "html": html,
-        "markdown": proposal_markdown,
-        "sections_count": len(sections),
-    })
-
-
-# ── Dispatcher (called by the agent loop) ────────────────────────
+# ── Dispatcher ────────────────────────────────────────────────────
 
 TOOL_MAP = {
     "retrieve_info": retrieve_info,
     "analyze_rfp": analyze_rfp,
-    "update_info": update_info,
     "proposal_engine": proposal_engine,
+    "edit_section": edit_section,
+    "update_info": update_info,
 }
 
 
 def execute_tool(name: str, arguments: dict) -> str:
-    """Execute a tool by name with the given arguments."""
     fn = TOOL_MAP.get(name)
     if fn is None:
         return json.dumps({"error": f"Unknown tool: {name}"})

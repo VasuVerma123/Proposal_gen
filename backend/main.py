@@ -88,6 +88,7 @@ class ChatResponse(BaseModel):
     reply: str
     preview_html: str | None = None
     proposal_markdown: str | None = None
+    proposal_data: dict | None = None
     tool_calls: list[str] = []
 
 
@@ -105,6 +106,13 @@ def root():
 @app.get("/api/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/proposal-template")
+def get_proposal_template():
+    """Return the empty proposal template for the frontend to render on load."""
+    from proposal_template import new_proposal
+    return new_proposal()
 
 
 @app.get("/api/neo4j-status")
@@ -164,6 +172,7 @@ def chat(req: ChatRequest):
             reply=result["reply"],
             preview_html=result.get("preview_html"),
             proposal_markdown=result.get("proposal_markdown"),
+            proposal_data=result.get("proposal_data"),
             tool_calls=result.get("tool_calls", []),
         )
     except Exception as e:
@@ -174,7 +183,9 @@ def chat(req: ChatRequest):
 def reset_chat(session_id: str = "default"):
     if session_id in _agents:
         _agents[session_id].reset()
-    return {"status": "reset"}
+        return {"status": "reset", "proposal_data": _agents[session_id].proposal_data}
+    from proposal_template import new_proposal
+    return {"status": "reset", "proposal_data": new_proposal()}
 
 
 # ── Logo upload ──────────────────────────────────────────────────

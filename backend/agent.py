@@ -1,62 +1,86 @@
 """
-Agent loop — drives OpenAI function-calling to orchestrate the three tools.
+Agent loop — drives OpenAI function-calling to orchestrate tools.
+
+The ProposalAgent keeps a structured proposal (JSON) that persists across
+chat turns.  Every API response returns the full proposal_data so the
+frontend can always render the section outline.
 """
 
 import os
 import json
 from openai import OpenAI
 from tools import TOOL_DEFINITIONS, execute_tool
+from proposal_template import (
+    new_proposal,
+    update_sections,
+    build_full_markdown,
+    build_preview_html,
+    get_section_ids_summary,
+)
 
-SYSTEM_PROMPT = """\
-You are **ProposalBot**, an AI assistant that helps users create professional business proposals.
+SECTION_OUTLINE = get_section_ids_summary()
 
-## Your Workflow
-1. **Gather requirements** — Ask the user for:
-   - Company name (the proposing company)
-   - Client / recipient name
-   - Industry sector (e.g. Telecom, Banking, Aviation, Insurance, Pharma, Retail)
-   - Key RFP requirements or a summary of what the proposal should cover
-   If the user provides everything in one message, skip the questions and proceed.
+SYSTEM_PROMPT = f"""\
+You are **ProposalBot**, an AI assistant that creates professional business proposals.
 
-2. **Analyze the RFP** — As soon as the user provides RFP text or requirements, use the `analyze_rfp` tool. This tool:
-   - Breaks the RFP into individual requirements automatically
-   - Searches the knowledge base for each requirement separately
-   - Returns a coverage report showing which requirements have matching templates/proposals
-   Present the analysis to the user clearly — show each requirement, whether it has KB coverage (strong/partial/weak/none), and the overall coverage percentage.
+The right panel of the UI ALWAYS shows the proposal outline.  Users can see
+which sections are filled and which are empty.  They can ask you to:
+  - "generate the entire proposal"
+  - "edit section 2.4.3"
+  - "rewrite 1.1 with more detail about the client"
+  - "condense section 5 to 300 words"
 
-3. **Search for templates** — Use `retrieve_info` to find the best overall template/proposal from the KB to use as a starting point for generation.
+## Proposal Section Structure
+{SECTION_OUTLINE}
 
-4. **Generate the proposal** — Use the `proposal_engine` tool with all gathered info + KB context to produce a styled proposal preview. The proposal should include these sections:
-   - Executive Summary
-   - Company Overview
-   - Understanding of Requirements (address EVERY requirement from the analyze_rfp breakdown)
-   - Proposed Solution / Scope of Work
-   - Methodology & Approach
-   - Project Timeline
-   - Team & Expertise
-   - Pricing (indicative)
-   - Why Choose Us
-   - Terms & Conditions
+## Your Tools
 
-5. **Iterate** — The user can ask for changes. Re-generate using `proposal_engine` with updated content.
+| Tool | When to use |
+|------|-------------|
+| `analyze_rfp` | When the user provides RFP text or requirements — break into individual requirements and search KB for each |
+| `retrieve_info` | Secondary KB search for overall matching templates |
+| `proposal_engine` | Generate the FULL proposal (all sections). Write markdown with section headings like `# 0. Title`, `## 0.1 SubTitle`, `### 2.2.1 Item` |
+| `edit_section` | Edit a SINGLE section by ID. Provide `section_id` and `content` |
+| `update_info` | Save the final proposal to KB when user confirms |
 
-6. **Save & Export** — When the user confirms the proposal is final (e.g. "send to KB", "finalize", "looks good"), use `update_info` to save it to the knowledge base. Tell the user they can download the proposal as PDF or DOCX using the download buttons on the preview panel.
+## Workflow
+
+1. **Gather info** — Company name, client name, sector, RFP requirements.
+2. **Analyze** — `analyze_rfp` to decompose requirements, then `retrieve_info` for templates.
+3. **Generate** — `proposal_engine` with full markdown using section headings.
+   Write content for sections 0 through 7.  At minimum, cover all level-0
+   and level-1 sections.  Level-2+ subsections can be brief or left for later.
+4. **Edit** — When user asks to change a specific section, use `edit_section`.
+5. **Save** — When user confirms, `update_info` to save to KB.
+
+## Heading Format for proposal_engine
+
+When you write `proposal_markdown`, use these exact heading patterns so the
+parser can map content to the correct section:
+
+```
+# 0. Cover & Administrative Information
+## 0.1 Cover Page
+(content here)
+## 0.2 Legal Information
+(content here)
+# 1. Executive Summary
+## 1.1 Client Context
+(content here)
+```
 
 ## Important Rules
-- ALWAYS use `analyze_rfp` when the user provides RFP text or requirements — this is your PRIMARY research tool.
-- Use `retrieve_info` as a secondary search to find overall matching templates.
-- When presenting the RFP analysis, format it clearly with requirement IDs, titles, and coverage status.
-- When using `proposal_engine`, write the `proposal_markdown` as rich Markdown with ## headings.
-- Make sure every requirement from the RFP analysis is addressed in the generated proposal.
-- Keep chat responses concise and professional.
-- When you generate a proposal, tell the user you've created a preview and they can see it on the right panel, and that they can download it as PDF or Word using the buttons.
-- If the user says "hi" or greets you, introduce yourself and ask what proposal they need.
-- When the user says "send to KB" or "save", call `update_info` and confirm it was saved. Remind them about the PDF/DOCX download buttons.
+- ALWAYS use `analyze_rfp` when user provides RFP text.
+- When generating, address EVERY level-0 and level-1 section.
+- For `edit_section`, only pass the section content (no heading needed).
+- Tell the user they can see the outline on the right and ask to edit any section.
+- Mention PDF/DOCX download buttons after generating.
+- If the user says "hi", introduce yourself and ask what proposal they need.
 """
 
 
 class ProposalAgent:
-    """Manages the multi-turn conversation with tool calling."""
+    """Multi-turn conversation manager with structured proposal state."""
 
     def __init__(self, api_key: str | None = None):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY", "")
@@ -64,24 +88,25 @@ class ProposalAgent:
         self.conversation: list[dict] = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
+        self.proposal_data = new_proposal()
 
     def chat(self, user_message: str) -> dict:
         """
-        Process one user message through the agent loop.
+        Process one user message.
 
-        Returns
-        -------
-        dict with keys:
-            reply      : str   – assistant's text response
-            preview_html : str | None – proposal HTML if generated
-            tool_calls : list[str]    – names of tools invoked
+        Returns dict with:
+            reply           : str
+            preview_html    : str | None
+            proposal_markdown : str | None
+            proposal_data   : dict          -- full structured proposal JSON
+            tool_calls      : list[str]
         """
         self.conversation.append({"role": "user", "content": user_message})
 
         preview_html = None
         proposal_markdown = None
         tool_names_used: list[str] = []
-        max_iterations = 10  # safety limit
+        max_iterations = 10
 
         for _ in range(max_iterations):
             response = self.client.chat.completions.create(
@@ -94,14 +119,20 @@ class ProposalAgent:
 
             msg = response.choices[0].message
 
-            # If no tool calls, we have the final assistant reply
             if not msg.tool_calls:
-                assistant_text = msg.content or ""
-                self.conversation.append({"role": "assistant", "content": assistant_text})
+                text = msg.content or ""
+                self.conversation.append({"role": "assistant", "content": text})
+
+                # Build latest preview from current proposal state
+                if any(s["content"] for s in self.proposal_data["sections"]):
+                    preview_html = build_preview_html(self.proposal_data)
+                    proposal_markdown = build_full_markdown(self.proposal_data)
+
                 return {
-                    "reply": assistant_text,
+                    "reply": text,
                     "preview_html": preview_html,
                     "proposal_markdown": proposal_markdown,
+                    "proposal_data": self.proposal_data,
                     "tool_calls": tool_names_used,
                 }
 
@@ -118,13 +149,30 @@ class ProposalAgent:
                 tool_names_used.append(fn_name)
                 result_str = execute_tool(fn_name, fn_args)
 
-                # If proposal_engine returned HTML + markdown, capture both
+                # ── Apply side-effects to proposal state ──────────
                 if fn_name == "proposal_engine":
                     try:
-                        result_data = json.loads(result_str)
-                        if result_data.get("status") == "preview_ready":
-                            preview_html = result_data["html"]
-                            proposal_markdown = result_data.get("markdown")
+                        data = json.loads(result_str)
+                        if data.get("status") == "preview_ready":
+                            # Update metadata
+                            meta = data.get("metadata", {})
+                            if meta:
+                                self.proposal_data["metadata"].update(meta)
+                            # Update sections from parsed markdown
+                            sections = data.get("sections", {})
+                            if sections:
+                                update_sections(self.proposal_data, sections)
+                    except Exception:
+                        pass
+
+                elif fn_name == "edit_section":
+                    try:
+                        data = json.loads(result_str)
+                        if data.get("status") == "section_updated":
+                            sid = data.get("section_id")
+                            content = data.get("content", "")
+                            if sid:
+                                update_sections(self.proposal_data, {sid: content})
                     except Exception:
                         pass
 
@@ -134,16 +182,22 @@ class ProposalAgent:
                     "content": result_str,
                 })
 
-        # Fallback if we hit max iterations
+        # Fallback
+        if any(s["content"] for s in self.proposal_data["sections"]):
+            preview_html = build_preview_html(self.proposal_data)
+            proposal_markdown = build_full_markdown(self.proposal_data)
+
         return {
-            "reply": "I've processed your request. Please check the preview on the right.",
+            "reply": "I've processed your request. Check the outline on the right.",
             "preview_html": preview_html,
             "proposal_markdown": proposal_markdown,
+            "proposal_data": self.proposal_data,
             "tool_calls": tool_names_used,
         }
 
     def reset(self):
-        """Clear conversation history."""
+        """Clear conversation and proposal."""
         self.conversation = [
             {"role": "system", "content": SYSTEM_PROMPT}
         ]
+        self.proposal_data = new_proposal()
