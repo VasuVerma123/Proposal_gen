@@ -1,14 +1,16 @@
 """
-Three tools exposed to the OpenAI function-calling agent:
+Four tools exposed to the OpenAI function-calling agent:
 
   1. retrieve_info   - search KB for similar proposals / matched requirements
-  2. update_info     - save the confirmed proposal back into the KB
-  3. proposal_engine - gather all info and build the proposal HTML preview
+  2. analyze_rfp     - break RFP into requirements & search KB per-requirement
+  3. update_info     - save the confirmed proposal back into the KB
+  4. proposal_engine - gather all info and build the proposal HTML preview
 """
 
 import os
 import json
 import base64
+from openai import OpenAI
 from agents.build_kb_agent import BuildKBAgent
 from pdf_builder import build_proposal_html, sections_from_markdown
 
@@ -49,6 +51,37 @@ TOOL_DEFINITIONS = [
                     },
                 },
                 "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "analyze_rfp",
+            "description": (
+                "Analyze an RFP (Request for Proposal) by breaking it into individual "
+                "requirements and searching the knowledge base for each one. Returns a "
+                "detailed breakdown of which requirements have matching proposals/templates "
+                "in our KB and which ones are new. Use this when the user provides RFP text, "
+                "requirements, or describes what their proposal should cover."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "rfp_text": {
+                        "type": "string",
+                        "description": (
+                            "The full RFP text or requirements description provided by the user. "
+                            "This can be the raw RFP content, a list of requirements, or a "
+                            "description of what the proposal should address."
+                        ),
+                    },
+                    "sector": {
+                        "type": "string",
+                        "description": "Industry sector (e.g. Telecom, Banking, Insurance).",
+                    },
+                },
+                "required": ["rfp_text"],
             },
         },
     },
@@ -162,6 +195,129 @@ def retrieve_info(query: str, top_k: int = 5) -> str:
     })
 
 
+def analyze_rfp(rfp_text: str, sector: str | None = None) -> str:
+    """
+    Break an RFP into individual requirements and search the KG for each one.
+
+    Pipeline:
+      1. GPT parses the RFP text into distinct, atomic requirements.
+      2. Each requirement is embedded and vector-searched against all KG chunks
+         (ProposalChunk, RFPChunk, AssetChunk).
+      3. Results are structured per-requirement with matched KB items + scores.
+    """
+    api_key = os.getenv("OPENAI_API_KEY", "")
+    client = OpenAI(api_key=api_key)
+    kb = _get_kb()
+
+    # ── Step 1: Parse RFP into requirements using GPT ─────────────
+    parse_prompt = (
+        "You are an RFP analyst. Extract every distinct requirement from the "
+        "following RFP or requirements description. Return valid JSON with a "
+        "single key \"requirements\" containing an array of objects. Each object "
+        "must have:\n"
+        "  - \"id\": string like \"R1\", \"R2\", etc.\n"
+        "  - \"title\": short 5-10 word title\n"
+        "  - \"description\": 1-2 sentence detailed description\n"
+        "  - \"category\": one of [\"functional\", \"technical\", \"operational\", "
+        "\"compliance\", \"commercial\", \"support\"]\n\n"
+        "Be thorough. Extract EVERY requirement, even implicit ones. "
+        "If the text mentions a sector or industry, extract domain-specific "
+        "requirements too."
+    )
+
+    try:
+        parse_response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": parse_prompt},
+                {"role": "user", "content": rfp_text},
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.2,
+        )
+        parsed = json.loads(parse_response.choices[0].message.content)
+        requirements = parsed.get("requirements", [])
+    except Exception as e:
+        return json.dumps({"error": f"Failed to parse RFP: {e}"})
+
+    if not requirements:
+        return json.dumps({
+            "error": "Could not extract any requirements from the provided text.",
+            "total_requirements": 0,
+        })
+
+    # ── Step 2: Search KG for each requirement ────────────────────
+    results = []
+    for req in requirements:
+        search_query = f"{req.get('title', '')}: {req.get('description', '')}"
+        if sector:
+            search_query = f"[{sector}] {search_query}"
+
+        try:
+            matches = kb.search_similar(search_query, top_k=3)
+        except Exception:
+            matches = []
+
+        formatted_matches = []
+        for m in matches:
+            parent = m.get("parent", {})
+            score = round(m.get("score", 0), 4)
+            # Only include matches with a meaningful similarity score
+            if score >= 0.65:
+                formatted_matches.append({
+                    "type": parent.get("_label", "Unknown"),
+                    "id": parent.get("id", ""),
+                    "sector": parent.get("sector", ""),
+                    "company": parent.get("company", ""),
+                    "score": score,
+                    "matched_text": (m.get("chunk_text", ""))[:400],
+                })
+
+        coverage = "full" if formatted_matches else "none"
+        if formatted_matches:
+            best_score = max(m["score"] for m in formatted_matches)
+            if best_score >= 0.85:
+                coverage = "strong"
+            elif best_score >= 0.75:
+                coverage = "partial"
+            else:
+                coverage = "weak"
+
+        results.append({
+            "requirement_id": req.get("id", ""),
+            "title": req.get("title", ""),
+            "description": req.get("description", ""),
+            "category": req.get("category", ""),
+            "coverage": coverage,
+            "kb_matches": formatted_matches,
+        })
+
+    # ── Step 3: Summary ───────────────────────────────────────────
+    total = len(results)
+    strong = sum(1 for r in results if r["coverage"] == "strong")
+    partial = sum(1 for r in results if r["coverage"] == "partial")
+    weak = sum(1 for r in results if r["coverage"] == "weak")
+    none_ = sum(1 for r in results if r["coverage"] == "none")
+
+    summary = {
+        "total_requirements": total,
+        "coverage_summary": {
+            "strong_match": strong,
+            "partial_match": partial,
+            "weak_match": weak,
+            "no_match": none_,
+        },
+        "coverage_pct": round((strong + partial) / total * 100, 1) if total else 0,
+        "requirements": results,
+        "recommendation": (
+            f"Found {strong + partial} of {total} requirements with KB coverage. "
+            + (f"{none_} requirement(s) will need fresh content." if none_ else "All requirements have some KB coverage!")
+        ),
+    }
+
+    return json.dumps(summary)
+
+
 def update_info(
     sector: str,
     company: str,
@@ -211,6 +367,7 @@ def proposal_engine(
 
 TOOL_MAP = {
     "retrieve_info": retrieve_info,
+    "analyze_rfp": analyze_rfp,
     "update_info": update_info,
     "proposal_engine": proposal_engine,
 }
