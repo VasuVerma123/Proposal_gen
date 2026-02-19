@@ -207,6 +207,55 @@ export default function App() {
     }
   };
 
+  // ── Upload RFP file ─────────────────────────────────────
+  const handleUploadRfp = () => {
+    const fileInput = document.createElement("input");
+    fileInput.type = "file";
+    fileInput.accept = ".pdf,.docx";
+    fileInput.onchange = async (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      const sector = prompt("Enter sector (e.g. Telecom, Banking, Insurance):", "General");
+      const company = prompt("RFP issuing company name (optional):", "");
+
+      // Show upload message in chat
+      setMessages((prev) => [
+        ...prev,
+        { role: "user", content: `Uploading RFP: **${file.name}** (${sector})` },
+      ]);
+      setLoading(true);
+
+      try {
+        const fd = new FormData();
+        fd.append("file", file);
+        fd.append("sector", sector || "General");
+        fd.append("company", company || "");
+        fd.append("session_id", "default");
+
+        const res = await axios.post(`${API}/api/upload-rfp`, fd);
+
+        const { reply, preview_html, proposal_markdown, proposal_data, tool_calls } = res.data;
+
+        setMessages((prev) => [...prev, { role: "assistant", content: reply }]);
+
+        if (preview_html) setPreviewHtml(preview_html);
+        if (proposal_markdown) setProposalMarkdown(proposal_markdown);
+        if (proposal_data) setProposalData(proposal_data);
+        if (tool_calls && tool_calls.length > 0) setToolsUsed(tool_calls);
+      } catch (err) {
+        const errMsg = err.response?.data?.detail || err.message || "Upload failed";
+        setMessages((prev) => [
+          ...prev,
+          { role: "assistant", content: `**Error:** ${errMsg}` },
+        ]);
+      } finally {
+        setLoading(false);
+      }
+    };
+    fileInput.click();
+  };
+
   // ── Edit section helper ────────────────────────────────
   const handleEditSection = (sectionId) => {
     setInput(`Edit section ${sectionId}: `);
@@ -273,13 +322,13 @@ export default function App() {
 
   // ── Write HTML into iframe ─────────────────────────────
   useEffect(() => {
-    if (iframeRef.current && previewHtml) {
+    if (activeTab === "preview" && iframeRef.current && previewHtml) {
       const doc = iframeRef.current.contentDocument;
       doc.open();
       doc.write(previewHtml);
       doc.close();
     }
-  }, [previewHtml]);
+  }, [previewHtml, activeTab]);
 
   // ── Section stats ──────────────────────────────────────
   const sectionStats = proposalData
@@ -410,11 +459,19 @@ export default function App() {
 
         {/* Input */}
         <div className="chat-input-area">
+          <button
+            className="upload-rfp-btn"
+            onClick={handleUploadRfp}
+            disabled={loading}
+            title="Upload RFP (PDF or DOCX)"
+          >
+            &#128206;
+          </button>
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKey}
-            placeholder="Describe the proposal you need... or 'edit section 2.3'"
+            placeholder="Describe the proposal you need... or upload an RFP file"
             rows={2}
             disabled={loading}
           />

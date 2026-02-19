@@ -343,12 +343,89 @@ def export_docx(req: ExportRequest):
         raise HTTPException(status_code=500, detail=f"DOCX generation failed: {e}")
 
 
+# ── Upload RFP (file → Neo4j → agent) ────────────────────────────
+
+@app.post("/api/upload-rfp", response_model=ChatResponse)
+async def upload_rfp(
+    file: UploadFile = File(...),
+    sector: str = Form("General"),
+    company: str = Form(""),
+    session_id: str = Form("default"),
+):
+    """
+    Upload an RFP file (PDF or DOCX).
+    1. Extract text from the file.
+    2. Ingest the RFP into Neo4j (chunks + embeddings + cross-links).
+    3. Feed the RFP text to the agent so it analyzes requirements
+       and searches the KB for matching proposals.
+    """
+    api_key = _get_api_key()
+    if not api_key:
+        raise HTTPException(status_code=400, detail="No API key set.")
+
+    # Extract text
+    try:
+        text = await _extract_file_text(file)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Could not read file: {e}")
+
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="No text extracted from file.")
+
+    # Ingest into Neo4j
+    rfp_detail = ""
+    try:
+        kb = _get_kb()
+        rfp_detail = kb._add_rfp({
+            "sector": sector,
+            "company": company,
+            "text": text[:8000],
+        })
+    except Exception as e:
+        rfp_detail = f"KB ingestion warning: {e}"
+
+    # Create agent if needed
+    if session_id not in _agents:
+        _agents[session_id] = ProposalAgent(api_key=api_key)
+    agent = _agents[session_id]
+
+    # Feed to agent — include the RFP text so it auto-analyzes
+    agent_message = (
+        f"I have uploaded an RFP document (file: {file.filename}, sector: {sector}).\n"
+        f"The RFP has been ingested into the knowledge base.\n\n"
+        f"Here is the RFP text — please analyze it, search the KB for matching "
+        f"proposals/templates, and then generate a full proposal:\n\n"
+        f"---\n{text[:6000]}\n---"
+    )
+
+    try:
+        result = agent.chat(agent_message)
+        return ChatResponse(
+            reply=result["reply"],
+            preview_html=result.get("preview_html"),
+            proposal_markdown=result.get("proposal_markdown"),
+            proposal_data=result.get("proposal_data"),
+            tool_calls=result.get("tool_calls", []),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # ── Helpers ──────────────────────────────────────────────────────
 
-async def _extract_pdf_text(file: UploadFile) -> str:
-    """Extract text from an uploaded PDF."""
+async def _extract_file_text(file: UploadFile) -> str:
+    """Extract text from an uploaded PDF or DOCX."""
     import io
     contents = await file.read()
+    fname = (file.filename or "").lower()
+
+    if fname.endswith(".docx"):
+        from docx import Document
+        doc = Document(io.BytesIO(contents))
+        paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+        return "\n\n".join(paragraphs)
+
+    # Default: treat as PDF
     reader = PdfReader(io.BytesIO(contents))
     pages = []
     for page in reader.pages:
@@ -356,3 +433,8 @@ async def _extract_pdf_text(file: UploadFile) -> str:
         if text:
             pages.append(text.strip())
     return "\n\n".join(pages)
+
+
+async def _extract_pdf_text(file: UploadFile) -> str:
+    """Extract text from an uploaded PDF (legacy helper)."""
+    return await _extract_file_text(file)

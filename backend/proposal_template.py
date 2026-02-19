@@ -237,29 +237,59 @@ def build_preview_html(proposal_data: dict) -> str:
 
     body = md_lib.markdown(full_md, extensions=["tables", "fenced_code"])
     meta = proposal_data.get("metadata", {})
+    company = meta.get("company_name", "")
+    client = meta.get("client_name", "")
+    sector = meta.get("sector", "")
+
+    # Build a cover-page header if metadata is available
+    cover = ""
+    if company or client:
+        cover = (
+            '<div class="cover">'
+            f'<div class="cover-tag">{sector} PROPOSAL</div>'
+            f'<h1 class="cover-title">Proposal for {client or "Client"}</h1>'
+            f'<p class="cover-subtitle">Prepared by <strong>{company or "Company"}</strong></p>'
+            '<hr class="cover-line"/>'
+            '</div>'
+        )
 
     return (
         '<!DOCTYPE html><html><head><meta charset="UTF-8"/><style>'
         "@page { size: A4; margin: 2cm; }"
-        "body { font-family: 'Segoe UI', Helvetica, Arial, sans-serif;"
-        "       color: #1a1a2e; line-height: 1.7; padding: 40px;"
-        "       max-width: 800px; margin: 0 auto; }"
-        "h1 { color: #0f3460; font-size: 24px; border-bottom: 3px solid #e94560;"
-        "     padding-bottom: 8px; margin-top: 32px; }"
-        "h2 { color: #0f3460; font-size: 19px; border-bottom: 1px solid #ddd;"
-        "     padding-bottom: 4px; margin-top: 24px; }"
+        "body { font-family: Helvetica, Arial, sans-serif; color: #1a1a2e; "
+        "       line-height: 1.6; font-size: 13px; padding: 40px; "
+        "       max-width: 820px; margin: 0 auto; }"
+        # Cover page
+        ".cover { text-align: center; padding: 60px 20px 40px; margin-bottom: 30px; }"
+        ".cover-tag { font-size: 12px; letter-spacing: 3px; color: #e94560; "
+        "             font-weight: 700; text-transform: uppercase; margin-bottom: 12px; }"
+        ".cover-title { font-size: 32px; color: #0f3460; margin: 0 0 10px; "
+        "               font-weight: 800; line-height: 1.2; }"
+        ".cover-subtitle { font-size: 16px; color: #64748b; margin: 0; }"
+        ".cover-subtitle strong { color: #0f3460; }"
+        ".cover-line { border: none; border-top: 3px solid #e94560; "
+        "              width: 80px; margin: 30px auto 0; }"
+        # Headings
+        "h1 { color: #0f3460; font-size: 24px; border-bottom: 3px solid #e94560; "
+        "     padding-bottom: 6px; margin-top: 28px; }"
+        "h2 { color: #0f3460; font-size: 19px; border-bottom: 1px solid #ccc; "
+        "     padding-bottom: 4px; margin-top: 22px; }"
         "h3 { color: #16213e; font-size: 15px; margin-top: 18px; }"
         "h4 { color: #16213e; font-size: 14px; margin-top: 14px; }"
         "h5 { color: #16213e; font-size: 13px; margin-top: 12px; }"
-        "hr  { border: none; border-top: 1px solid #ddd; margin: 24px 0; }"
-        "ul, ol { padding-left: 24px; }"
-        "li  { margin-bottom: 4px; }"
+        # Elements
+        "hr { border: none; border-top: 1px solid #ddd; margin: 20px 0; }"
+        "ul, ol { padding-left: 22px; }"
+        "li { margin-bottom: 3px; }"
         "table { width: 100%; border-collapse: collapse; margin: 12px 0; }"
-        "th { background: #0f3460; color: #fff; padding: 8px 12px; text-align: left; }"
-        "td { padding: 8px 12px; border-bottom: 1px solid #eee; }"
+        "th { background: #0f3460; color: #fff; padding: 8px 10px; text-align: left; }"
+        "td { padding: 8px 10px; border-bottom: 1px solid #ddd; }"
+        "tr:nth-child(even) td { background: #f8fafc; }"
         "strong { color: #0f3460; }"
-        "p { margin: 8px 0; }"
-        f"</style></head><body>{body}</body></html>"
+        "p { margin: 6px 0; }"
+        "blockquote { border-left: 4px solid #e94560; margin: 12px 0; "
+        "             padding: 8px 16px; background: #f8fafc; color: #334155; }"
+        f"</style></head><body>{cover}{body}</body></html>"
     )
 
 
